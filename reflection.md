@@ -68,10 +68,28 @@ Yes, five changes were made after reviewing the class skeleton against the UML:
 - What constraints does your scheduler consider (for example: time, priority, preferences)?
 - How did you decide which constraints mattered most?
 
+**Answer:**
+The scheduler considers three constraints:
+
+1. **Time budget** — `Owner.available_minutes` is the hard outer limit. A task is only considered schedulable if `task.duration_minutes <= owner.remaining_availability()`. This is enforced in both `select_tasks()` and `allocate_time()`, and double-checked by `validate_schedule()`.
+
+2. **Priority and required status** — `order_tasks()` sorts tasks so that required tasks always come before optional ones, and within each group by descending priority value (high → medium → low). This ensures the most critical care always gets scheduled before optional enrichment activities.
+
+3. **Time windows** — Each task can specify an `earliest_start` and `latest_end`. `fits_in_window()` checks whether a task's constraints fall within a given availability window, and `sort_tasks_by_time()` orders tasks chronologically so that earlier-windowed tasks are attempted first.
+
+The priority ordering was the most important decision because it maps directly to real pet-owner risk: a missed medication dose has consequences a missed play session does not. Time-budget enforcement is a close second — without it the schedule would be aspirational rather than realistic.
+
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
 - Why is that tradeoff reasonable for this scenario?
+
+**Answer:**
+The scheduler uses a **greedy allocation strategy**: it walks the priority-sorted task list in order and grabs each task if time permits, stopping as soon as the budget is exhausted. It never backtracks or tries a different combination to fit more tasks.
+
+The tradeoff is correctness vs. simplicity. A greedy approach can fail to find the optimal packing — for example, skipping one 30-minute optional task could allow three 10-minute tasks to fit instead. A proper knapsack algorithm would find that better solution.
+
+This tradeoff is reasonable here for two reasons. First, pet care schedules are small: a household rarely has more than a dozen tasks per day, so the gap between greedy and optimal is typically just one or two low-priority tasks. Second, the required-first ordering means the greedy approach is essentially optimal for the tasks that actually matter — required, high-priority care is always scheduled, and only optional activities compete for leftover time where the packing inefficiency would appear.
 
 ---
 

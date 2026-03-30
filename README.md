@@ -22,6 +22,24 @@ Your final app should:
 - Display the plan clearly (and ideally explain the reasoning)
 - Include tests for the most important scheduling behaviors
 
+## Smarter Scheduling
+
+Four algorithmic improvements were added to make the scheduler more useful for real pet-owner workflows:
+
+### Sort by time
+`Scheduler.sort_tasks_by_time(tasks)` orders any task list chronologically by `earliest_start`. Tasks without a time window sink to the end of the list. A lambda key function converts each `HH:MM` string into a comparable `datetime` object so the sort is accurate even across midnight boundaries.
+
+### Filter by pet or status
+`Scheduler.filter_tasks(tasks, pet_name, completed)` narrows a task list to exactly what the owner needs to see. Filters can be used independently or combined — e.g., "show only Luna's pending tasks." Pet matching uses object identity rather than string comparison, so two pets with similar task names are never confused.
+
+### Recurring tasks
+Tasks accept a `recurrence` field (`"daily"`, `"weekly"`, or `"weekdays"`). When a recurring task is completed, `Scheduler.complete_and_reschedule(task)` automatically creates the next occurrence and attaches it to the correct pet. Next dates are calculated with Python's `timedelta`: daily adds 1 day, weekly adds 7, and weekdays advances to the next Mon–Fri, skipping Saturday and Sunday.
+
+### Conflict detection
+`Scheduler.detect_conflicts()` scans all tasks with defined time windows and flags any pair whose windows overlap using the condition `a_start < b_end AND b_start < a_end`. `Scheduler.conflict_warnings()` wraps the raw pairs into plain-English strings that identify whether the clash is within the same pet or across different pets. Warnings are printed automatically at the start of `generate_schedule()` — the schedule is still produced, so no task is silently dropped.
+
+---
+
 ## Getting started
 
 ### Setup
