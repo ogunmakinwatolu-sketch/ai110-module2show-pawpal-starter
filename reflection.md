@@ -100,10 +100,27 @@ This tradeoff is reasonable here for two reasons. First, pet care schedules are 
 - How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
 - What kinds of prompts or questions were most helpful?
 
+**Answer:**
+AI was used at every stage of the project, but in different roles depending on the task:
+
+- **Design brainstorming** — early prompts like "suggest small algorithmic improvements for a pet-owner scheduling app" surfaced ideas (bin-packing, medication gap enforcement, age-based priority boost) that weren't in the original spec and shaped what got built.
+- **Implementation** — specific, code-grounded prompts worked best: "implement a method that sorts Tasks by earliest_start using a lambda key" or "add conflict detection that returns warning strings rather than raising exceptions." These produced targeted code that fit directly into the existing class structure.
+- **Docstring generation** — using the "Generate documentation" smart action on each new method produced Google-style `Args:` / `Returns:` docstrings consistently across the whole module without having to write them manually.
+- **Refactoring and review** — asking "what is wrong with the current generate_schedule output when recurring tasks are added before it runs?" helped diagnose the demo ordering bug in `main.py` where extra task copies inflated the conflict list.
+
+The most useful prompt pattern was always **specific + grounded in the actual code**: referencing the real method name, the real field name, and the real constraint produced answers that could be used directly. Vague prompts like "make the scheduler better" produced suggestions that required significant filtering.
+
 **b. Judgment and verification**
 
 - Describe one moment where you did not accept an AI suggestion as-is.
 - How did you evaluate or verify what the AI suggested?
+
+**Answer:**
+When the conflict detection feature was first implemented, the AI wired `generate_schedule()` to call `conflict_warnings()` and print results to stdout. Running `main.py` showed the warnings printing twice — once from the explicit demo call and once from inside `generate_schedule()` — and the second pass also included extra tasks added by the recurring-task demo, producing false same-task-vs-itself conflicts.
+
+The suggestion was not accepted as-is. The fix required two independent judgments: first, reordering the demos in `main.py` so the schedule ran before `complete_and_reschedule()` added new task copies; second, recognising that `generate_schedule()` printing warnings directly to stdout was the wrong layer — the UI (`app.py`) already calls `conflict_warnings()` and renders them with `st.error`/`st.warning`, so the stdout prints in `generate_schedule()` were redundant noise in the Streamlit context.
+
+Verification was done by reading the terminal output line by line and tracing each warning back to the task pair that triggered it, then confirming after the fix that the demo section showed exactly the expected conflicts with no duplicates.
 
 ---
 
@@ -114,10 +131,33 @@ This tradeoff is reasonable here for two reasons. First, pet care schedules are 
 - What behaviors did you test?
 - Why were these tests important?
 
+**Answer:**
+The test suite in `tests/test_pawpal.py` covers the following behaviors:
+
+- **`Task.mark_complete()`** — verifies that `completed` flips from `False` to `True`. This is the foundation of the status-filtering and recurring-task pipeline; if marking complete doesn't work, neither does anything that depends on it.
+- **`Pet.add_task()`** — verifies that the task count on a pet increases and that `task.pet_name` is set to the pet's name. This is the entry point for every task in the system; a broken `add_task` would silently produce tasks with no pet association, breaking `filter_tasks` and `complete_and_reschedule`.
+- **`Task.next_occurrence()` for daily, weekly, and weekdays recurrence** — verifies the exact `due_date` produced by each `timedelta` path, including the weekday skip logic when the base date falls on a Friday (expected: Monday, +3 days).
+- **`Scheduler.order_tasks()`** — verifies that a required low-priority task sorts before an optional high-priority task, and that within the required group tasks are ordered high → medium → low.
+- **`Scheduler.detect_conflicts()`** — verifies that two tasks with overlapping windows are flagged, tasks without windows are ignored, and two non-overlapping tasks produce an empty result.
+- **`Scheduler.filter_tasks()`** — verifies pet-name filtering isolates only one pet's tasks, status filtering returns only pending or only completed tasks, and combined filtering works correctly.
+
+These tests matter because they are the exact behaviors most likely to fail silently: wrong dates, wrong sort order, and wrong pet assignment all produce a schedule that looks plausible but is wrong.
+
 **b. Confidence**
 
 - How confident are you that your scheduler works correctly?
 - What edge cases would you test next if you had more time?
+
+**Answer:**
+Confidence is high for the happy path — the core scheduling pipeline (select → order → allocate → validate) and the four new algorithms (sort, filter, recurrence, conflict detection) all behave correctly on realistic inputs as demonstrated by `main.py` and the test suite.
+
+Confidence is lower for the following edge cases, which would be tested next:
+
+1. **`next_occurrence()` across month and year boundaries** — does `date(2024, 12, 31) + timedelta(days=1)` correctly produce `date(2025, 1, 1)`? Python's `date` handles this, but it's worth an explicit assertion.
+2. **`filter_tasks()` with a pet name that doesn't exist** — currently returns an empty list; should verify it doesn't raise.
+3. **`allocate_time()` when every task is exactly equal to `available_minutes`** — does the first task consume the full budget and leave zero for the rest?
+4. **`detect_conflicts()` with tasks whose windows touch but don't overlap** — e.g., task A ends at `09:00` and task B starts at `09:00`. The condition `a_start < b_end AND b_start < a_end` should correctly treat this as non-overlapping (strict inequality), but a test would confirm it.
+5. **`complete_and_reschedule()` when `pet_name` is `None`** — the pet lookup loop exits without attaching the new task; the function silently returns it without registering it anywhere.
 
 ---
 
@@ -127,10 +167,29 @@ This tradeoff is reasonable here for two reasons. First, pet care schedules are 
 
 - What part of this project are you most satisfied with?
 
+**Answer:**
+The part most worth being satisfied with is that the four new algorithms — sorting, filtering, recurring tasks, and conflict detection — all compose cleanly. `filter_tasks()` and `sort_tasks_by_time()` both accept a `list[Task]` and return a `list[Task]`, so they can be chained in any order without side effects. `complete_and_reschedule()` calls `next_occurrence()` internally and attaches the result to the right pet without the caller needing to know how. `conflict_warnings()` wraps `detect_conflicts()` without duplicating its logic.
+
+That composability wasn't planned upfront — it emerged from keeping each method focused on one responsibility. The result is that `app.py` can call them in any combination depending on what the user has selected, and `main.py` can chain them for terminal output, and neither file contains any scheduling logic itself.
+
 **b. What you would improve**
 
 - If you had another iteration, what would you improve or redesign?
 
+**Answer:**
+Two things:
+
+1. **Replace the greedy allocator with a knapsack approach.** The current `allocate_time()` can fail to pack tasks optimally when a large optional task blocks several smaller required ones. A simple 0/1 knapsack over the task list would guarantee no required task is skipped if it fits in the budget, even if a lower-priority task was allocated first.
+
+2. **Decouple `generate_schedule()` from stdout.** Currently the method prints conflict warnings directly with `print()`, which is fine for the terminal demo but pollutes output when called from Streamlit. A cleaner design would return the warnings alongside the schedule — perhaps as a `ScheduleResult` dataclass with `schedule` and `warnings` fields — and let the caller decide how to display them.
+
 **c. Key takeaway**
 
 - What is one important thing you learned about designing systems or working with AI on this project?
+
+**Answer:**
+The most important thing learned is that **AI is most useful when you already understand the problem well enough to evaluate its output.**
+
+Early in the project, broad prompts ("make the scheduler smarter") produced suggestions that needed heavy filtering. Later, once the class structure was clear and the constraints were understood, narrow prompts ("implement conflict detection that returns warning strings and never raises") produced code that could go directly into the file with only minor adjustments.
+
+The shift that made the difference was treating AI as a fast implementation partner rather than a designer. Design decisions — what constraints matter, what the right tradeoff is, where a warning belongs vs. an exception — require understanding the domain and the user. Those judgments came from reading the code, running it, and noticing when the output was wrong. AI accelerated the execution of those decisions but didn't replace the reasoning that produced them.
