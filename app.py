@@ -6,6 +6,15 @@ st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
 st.title("🐾 PawPal+")
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+PRIORITY_BADGE = {"high": "🔴 High", "medium": "🟡 Medium", "low": "🟢 Low"}
+
+def priority_badge(p: str) -> str:
+    return PRIORITY_BADGE.get(p, p)
+
+# ---------------------------------------------------------------------------
 # Session state — initialise Owner and Pet exactly once per browser session
 # ---------------------------------------------------------------------------
 
@@ -44,15 +53,19 @@ with col2:
     pet.species = st.selectbox(
         "Species",
         ["dog", "cat", "other"],
-        index=["dog", "cat", "other"].index(pet.species) if pet.species in ["dog", "cat", "other"] else 2,
+        index=["dog", "cat", "other"].index(pet.species)
+        if pet.species in ["dog", "cat", "other"] else 2,
     )
 
-st.caption(f"Caring for: **{pet.name}** the {pet.species}  |  Owner: **{owner.name}**  |  Time budget: {owner.available_minutes} min")
+st.caption(
+    f"Caring for: **{pet.name}** the {pet.species}  |  "
+    f"Owner: **{owner.name}**  |  Time budget: **{owner.available_minutes} min**"
+)
 
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Add tasks — creates real Task objects and attaches them to the Pet
+# Add tasks
 # ---------------------------------------------------------------------------
 
 st.subheader("Add a Task")
@@ -65,14 +78,13 @@ with col2:
 with col3:
     priority = st.selectbox("Priority", ["low", "medium", "high"], index=2)
 
-col4, col5 = st.columns(2)
+col4, col5, col6 = st.columns(3)
 with col4:
-    recurrence_choice = st.selectbox(
-        "Recurrence", ["none", "daily", "weekly", "weekdays"]
-    )
+    recurrence_choice = st.selectbox("Recurrence", ["none", "daily", "weekly", "weekdays"])
 with col5:
-    earliest = st.text_input("Earliest start (HH:MM, optional)", value="")
-    latest = st.text_input("Latest end (HH:MM, optional)", value="")
+    earliest = st.text_input("Earliest start (HH:MM)", value="")
+with col6:
+    latest = st.text_input("Latest end (HH:MM)", value="")
 
 if st.button("Add task"):
     new_task = Task(
@@ -86,13 +98,42 @@ if st.button("Add task"):
         recurrence=None if recurrence_choice == "none" else recurrence_choice,
     )
     pet.add_task(new_task)
-    st.success(f"Added: {task_title} ({duration} min, {priority} priority"
-               + (f", recurs {recurrence_choice}" if recurrence_choice != "none" else "") + ")")
+    label = f"**{task_title}** — {duration} min, {priority_badge(priority)}"
+    if recurrence_choice != "none":
+        label += f", recurs {recurrence_choice}"
+    st.success(f"Task added: {label}")
 
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Task list — filter by pet / status, mark complete, sort by time
+# Scheduler instance — shared for filter, sort, conflict, and schedule
+# ---------------------------------------------------------------------------
+
+scheduler = Scheduler(owner=owner)
+all_tasks = owner.all_tasks()
+
+# ---------------------------------------------------------------------------
+# Conflict warnings — shown prominently before the task list
+# ---------------------------------------------------------------------------
+
+warnings = scheduler.conflict_warnings()
+if warnings:
+    st.subheader("⚠️ Scheduling Conflicts")
+    st.caption(
+        "The tasks below have overlapping time windows. "
+        "Your schedule will still be built, but you may need to be in two places at once. "
+        "Consider shortening a window or staggering start times."
+    )
+    for w in warnings:
+        # conflict_warnings() tags each message with [same pet (...)] or [cross-pet: ...]
+        if "cross-pet" in w:
+            st.error(w)   # cross-pet = harder to resolve; needs coordinating two animals
+        else:
+            st.warning(w) # same-pet = easier fix; just reschedule one task for that pet
+    st.divider()
+
+# ---------------------------------------------------------------------------
+# Task list — filter, sort, mark complete
 # ---------------------------------------------------------------------------
 
 st.subheader("Tasks")
@@ -104,33 +145,57 @@ with col_f1:
 with col_f2:
     filter_status = st.selectbox("Filter by status", ["All", "Pending", "Completed"])
 with col_f3:
-    sort_by_time = st.checkbox("Sort by earliest start time")
+    sort_option = st.radio(
+        "Sort by",
+        ["Default", "Start time", "Urgency score"],
+        index=0,
+        horizontal=True,
+    )
 
-# Build task list from all pets so filtering works across multiple pets
-all_tasks = owner.all_tasks()
-
-# Apply filters
-scheduler_for_filter = Scheduler(owner=owner)
-filtered_tasks = scheduler_for_filter.filter_tasks(
+filtered_tasks = scheduler.filter_tasks(
     all_tasks,
     pet_name=filter_pet if filter_pet != "All" else None,
     completed={"Pending": False, "Completed": True}.get(filter_status),
 )
 
-# Optionally sort by time
-if sort_by_time:
-    filtered_tasks = scheduler_for_filter.sort_tasks_by_time(filtered_tasks)
+if sort_option == "Start time":
+    filtered_tasks = scheduler.sort_tasks_by_time(filtered_tasks)
+elif sort_option == "Urgency score":
+    filtered_tasks = scheduler.rank_by_urgency(filtered_tasks)
 
 if filtered_tasks:
-    st.write(f"Showing **{len(filtered_tasks)}** task(s):")
+    st.caption(f"Showing **{len(filtered_tasks)}** task(s)")
+
+    show_score = sort_option == "Urgency score"
+
+    # Column headers
+    if show_score:
+        h1, h2, h3, h4, h5, h6, h7 = st.columns([3, 2, 2, 2, 2, 1, 1])
+        with h7: st.markdown("**Score**")
+    else:
+        h1, h2, h3, h4, h5, h6 = st.columns([3, 2, 2, 2, 2, 1])
+    with h1: st.markdown("**Task**")
+    with h2: st.markdown("**Duration**")
+    with h3: st.markdown("**Priority**")
+    with h4: st.markdown("**Pet**")
+    with h5: st.markdown("**Recurs**")
+    with h6: st.markdown("**Done**")
+
+    st.markdown("---")
+
     for i, task in enumerate(filtered_tasks):
-        col_a, col_b, col_c, col_d, col_e, col_f = st.columns([3, 2, 2, 2, 2, 1])
+        if show_score:
+            col_a, col_b, col_c, col_d, col_e, col_f, col_g = st.columns([3, 2, 2, 2, 2, 1, 1])
+        else:
+            col_a, col_b, col_c, col_d, col_e, col_f = st.columns([3, 2, 2, 2, 2, 1])
+        title_display = f"~~{task.title}~~" if task.completed else f"**{task.title}**"
+        window = f" `{task.earliest_start}–{task.latest_end}`" if task.earliest_start else ""
         with col_a:
-            st.write(task.title)
+            st.markdown(title_display + window)
         with col_b:
             st.write(f"{task.duration_minutes} min")
         with col_c:
-            st.write(task.priority)
+            st.write(priority_badge(task.priority))
         with col_d:
             st.write(task.pet_name or "—")
         with col_e:
@@ -146,6 +211,9 @@ if filtered_tasks:
                 task.mark_complete()
             elif not done and task.completed:
                 task.completed = False
+        if show_score:
+            with col_g:
+                st.write(f"{task.weighted_score():.0f}")
 else:
     st.info("No tasks match the current filter — add one above or adjust the filter.")
 
@@ -153,30 +221,28 @@ else:
 # Recurring tasks summary
 # ---------------------------------------------------------------------------
 
-recurring = scheduler_for_filter.recurring_tasks()
+recurring = scheduler.recurring_tasks()
 if recurring:
-    with st.expander(f"Recurring tasks ({len(recurring)})"):
-        for t in recurring:
-            st.write(f"- **{t.title}** — {t.recurrence} ({t.duration_minutes} min, {t.priority})")
+    with st.expander(f"🔁 Recurring tasks ({len(recurring)})"):
+        st.dataframe(
+            [
+                {
+                    "Task": t.title,
+                    "Pet": t.pet_name or "—",
+                    "Recurrence": t.recurrence,
+                    "Duration (min)": t.duration_minutes,
+                    "Priority": priority_badge(t.priority),
+                }
+                for t in recurring
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
 
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Conflict detection — shown before scheduling so owners can fix issues
-# ---------------------------------------------------------------------------
-
-conflicts = scheduler_for_filter.detect_conflicts()
-if conflicts:
-    st.subheader("Time Window Conflicts")
-    for a, b in conflicts:
-        st.warning(
-            f"**{a.title}** ({a.earliest_start}–{a.latest_end}) overlaps with "
-            f"**{b.title}** ({b.earliest_start}–{b.latest_end})"
-        )
-    st.divider()
-
-# ---------------------------------------------------------------------------
-# Generate schedule — runs Scheduler and displays explain_plan() output
+# Generate schedule
 # ---------------------------------------------------------------------------
 
 st.subheader("Build Schedule")
@@ -185,16 +251,59 @@ if st.button("Generate schedule"):
     if not owner.all_tasks():
         st.warning("Add at least one task before generating a schedule.")
     else:
-        # Reset available_minutes so the scheduler works from the full budget
         owner.available_minutes = st.session_state.original_minutes
-        scheduler = Scheduler(owner=owner)
-        schedule = scheduler.generate_schedule()
+        sched_runner = Scheduler(owner=owner)
+        # generate_schedule() prints conflict warnings to stdout; UI already shows them above
+        pending = [t for t in owner.all_tasks() if not t.completed]
+        selected = sched_runner.select_tasks()
+        ordered = sched_runner.order_tasks(selected)
+        schedule = sched_runner.allocate_time(ordered)
+        sched_runner.validate_schedule(schedule)
 
         if schedule:
-            st.success("Schedule generated!")
-            st.text(scheduler.explain_plan(schedule))
+            st.success(f"Schedule ready — {len(schedule)} task(s) planned")
+
+            # Display as a clean table
+            st.dataframe(
+                [
+                    {
+                        "Task": entry["title"],
+                        "Duration (min)": entry["duration_minutes"],
+                        "Priority": priority_badge(entry["priority"]),
+                        "Type": entry["task_type"],
+                        "Required": "Yes" if entry["required"] else "No",
+                    }
+                    for entry in schedule
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # Remaining time as a metric
+            remaining = sched_runner.owner.remaining_availability()
+            total = st.session_state.original_minutes
+            used = total - remaining
+            col_m1, col_m2, col_m3 = st.columns(3)
+            col_m1.metric("Tasks scheduled", len(schedule))
+            col_m2.metric("Minutes used", used)
+            col_m3.metric("Minutes remaining", remaining)
+
+            # Flag any required tasks that didn't make it in
+            scheduled_titles = {e["title"] for e in schedule}
+            skipped_required = [
+                t for t in owner.all_tasks()
+                if t.required and not t.completed and t.title not in scheduled_titles
+            ]
+            if skipped_required:
+                st.warning(
+                    "**Required tasks that couldn't fit in the time budget:**\n"
+                    + "\n".join(f"- {t.title} ({t.duration_minutes} min)" for t in skipped_required)
+                )
         else:
-            st.warning("No tasks could be scheduled. Try increasing available minutes or reducing task durations.")
+            st.warning(
+                "No tasks could be scheduled. "
+                "Try increasing available minutes or reducing task durations."
+            )
 
 # Keep original_minutes in sync when the user changes the time budget
 st.session_state.original_minutes = owner.available_minutes

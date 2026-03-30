@@ -264,3 +264,73 @@ def test_all_completed_tasks_produce_empty_schedule():
     task.mark_complete()
     scheduler = make_scheduler(tasks=[task])
     assert scheduler.generate_schedule() == []
+
+
+# ---------------------------------------------------------------------------
+# Weighted scoring
+# ---------------------------------------------------------------------------
+
+def test_weighted_score_base_only():
+    """Low priority, not required, no deadline, not medication → 10.0."""
+    task = make_task(priority="low", required=False, task_type="exercise", latest_end=None)
+    assert task.weighted_score("09:00") == 10.0
+
+
+def test_weighted_score_all_bonuses_no_deadline():
+    """High + required + medication, no deadline → 30 + 20 + 12 + 0 = 62.0."""
+    task = make_task(priority="high", required=True, task_type="medication", latest_end=None)
+    assert task.weighted_score("09:00") == 62.0
+
+
+def test_weighted_score_urgency_tier_imminent():
+    """30 min remaining (≤60) → urgency bonus = 15."""
+    task = make_task(priority="low", required=False, task_type="exercise", latest_end="09:30")
+    assert task.weighted_score("09:00") == 10 + 15
+
+
+def test_weighted_score_urgency_tier_moderate():
+    """90 min remaining (≤120) → urgency bonus = 8."""
+    task = make_task(priority="low", required=False, task_type="exercise", latest_end="10:30")
+    assert task.weighted_score("09:00") == 10 + 8
+
+
+def test_weighted_score_urgency_tier_approaching():
+    """180 min remaining (≤240) → urgency bonus = 3."""
+    task = make_task(priority="low", required=False, task_type="exercise", latest_end="12:00")
+    assert task.weighted_score("09:00") == 10 + 3
+
+
+def test_weighted_score_overdue_deadline():
+    """Deadline already passed (negative remaining) → treated as maximally urgent (+15)."""
+    task = make_task(priority="low", required=False, task_type="exercise", latest_end="08:00")
+    assert task.weighted_score("09:00") == 10 + 15
+
+
+def test_rank_by_urgency_highest_score_first():
+    """rank_by_urgency returns the task with the highest score at index 0."""
+    t_low  = make_task(title="Play",     priority="low",  required=False, task_type="exercise")
+    t_high = make_task(title="Medicine", priority="high", required=True,  task_type="medication")
+    scheduler = make_scheduler(tasks=[t_low, t_high])
+
+    result = scheduler.rank_by_urgency([t_low, t_high], current_time="09:00")
+
+    assert result[0] is t_high
+    assert result[1] is t_low
+
+
+def test_rank_by_urgency_does_not_mutate_input():
+    """rank_by_urgency must not modify the original list."""
+    t_low  = make_task(title="Play",     priority="low",  required=False)
+    t_high = make_task(title="Medicine", priority="high", required=True)
+    original = [t_low, t_high]
+    scheduler = make_scheduler(tasks=[t_low, t_high])
+
+    scheduler.rank_by_urgency(original, current_time="09:00")
+
+    assert original[0] is t_low  # input list unchanged
+
+
+def test_rank_by_urgency_empty_list():
+    """rank_by_urgency on an empty list returns an empty list."""
+    scheduler = make_scheduler()
+    assert scheduler.rank_by_urgency([], current_time="09:00") == []

@@ -33,6 +33,59 @@ class Task:
         """Map priority label to a numeric value for sorting."""
         return {"low": 1, "medium": 2, "high": 3}.get(self.priority, 0)
 
+    def weighted_score(self, current_time: str | None = None) -> float:
+        """Compute a composite urgency score used by rank_by_urgency().
+
+        Combines four independent components into one float so tasks can be
+        ranked by a richer signal than priority alone:
+
+        - **Base priority** — low=10, medium=20, high=30.
+        - **Required bonus** — +20 if ``required`` is True.
+        - **Care type bonus** — +12 if ``task_type == "medication"``.
+        - **Deadline urgency bonus** — derived from minutes remaining until
+          ``latest_end``. A passed deadline (≤ 0 min) or imminent one (≤ 60 min)
+          scores +15; ≤ 120 min scores +8; ≤ 240 min scores +3; beyond = +0.
+          Tasks with no ``latest_end`` always score +0 for this component.
+
+        Both ``current_time`` and ``latest_end`` are normalised through
+        ``TIME_FORMAT`` so the subtraction always compares same-epoch datetimes
+        (``1900-01-01 HH:MM``). Passing ``current_time=None`` uses
+        ``datetime.now()`` normalised to the same epoch.
+
+        Args:
+            current_time (str | None): Reference time as ``HH:MM``. Defaults
+                to the current wall-clock time when None.
+
+        Returns:
+            float: Composite urgency score. Maximum achievable value is 77.0
+                   (high + required + medication + overdue/imminent deadline).
+        """
+        base = {"low": 10, "medium": 20, "high": 30}.get(self.priority, 0)
+        required_bonus = 20 if self.required else 0
+        care_bonus = 12 if self.task_type == "medication" else 0
+
+        if self.latest_end is None:
+            urgency_bonus = 0
+        else:
+            # Normalise both sides to the 1900-01-01 epoch used by _parse_time
+            if current_time is None:
+                now = datetime.strptime(datetime.now().strftime(TIME_FORMAT), TIME_FORMAT)
+            else:
+                now = self._parse_time(current_time)
+            deadline = self._parse_time(self.latest_end)
+            minutes_remaining = (deadline - now).total_seconds() / 60
+
+            if minutes_remaining <= 60:    # covers overdue (≤0) and imminent
+                urgency_bonus = 15
+            elif minutes_remaining <= 120:
+                urgency_bonus = 8
+            elif minutes_remaining <= 240:
+                urgency_bonus = 3
+            else:
+                urgency_bonus = 0
+
+        return float(base + required_bonus + care_bonus + urgency_bonus)
+
     def fits_in_window(self, start: str, end: str) -> bool:
         """Return True if the task's timing constraints fall within start–end."""
         window_start = self._parse_time(start)
@@ -337,6 +390,31 @@ class Scheduler:
     # ------------------------------------------------------------------
     # Sort by time
     # ------------------------------------------------------------------
+
+    def rank_by_urgency(
+        self,
+        tasks: list[Task],
+        current_time: str | None = None,
+    ) -> list[Task]:
+        """Sort tasks by composite urgency score, highest first.
+
+        Delegates all score computation to ``Task.weighted_score()`` so that
+        scoring logic stays on the Task and this method only handles ordering.
+        The original list is not modified.
+
+        Args:
+            tasks (list[Task]): The task list to rank.
+            current_time (str | None): Reference time passed through to
+                ``weighted_score()``. If None, each call uses ``datetime.now()``.
+
+        Returns:
+            list[Task]: A new list sorted by ``weighted_score`` descending.
+        """
+        return sorted(
+            tasks,
+            key=lambda t: t.weighted_score(current_time),
+            reverse=True,
+        )
 
     def sort_tasks_by_time(self, tasks: list[Task]) -> list[Task]:
         """Sort a list of tasks in chronological order by their earliest start time.
